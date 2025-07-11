@@ -62,6 +62,12 @@ const (
 
 	// AppStudioTestOutputError is the result that's set when the AppStudio test produces an error.
 	AppStudioTestOutputError = "ERROR"
+
+	// PipelineRunScenarioLabel is the label used to identify which IntegrationTestScenario a PipelineRun belongs to
+	PipelineRunScenarioLabel = "integration.konflux-ci.dev/scenario"
+
+	// PipelineRunTestSubjectLabel is the label used to identify which TestSubject a PipelineRun belongs to
+	PipelineRunTestSubjectLabel = "integration.konflux-ci.dev/test-subject"
 )
 
 // AppStudioTestResult matches AppStudio TaskRun result contract

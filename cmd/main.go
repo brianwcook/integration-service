@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	applicationapiv1alpha1 "github.com/konflux-ci/application-api/api/v1alpha1"
+	newintegrationv1alpha1 "github.com/konflux-ci/integration-service/api/integration/v1alpha1"
 	integrationv1alpha1 "github.com/konflux-ci/integration-service/api/v1alpha1"
 	integrationv1beta1 "github.com/konflux-ci/integration-service/api/v1beta1"
 	integrationv1beta2 "github.com/konflux-ci/integration-service/api/v1beta2"
@@ -65,6 +66,7 @@ func init() {
 	utilruntime.Must(integrationv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(integrationv1beta1.AddToScheme(scheme))
 	utilruntime.Must(integrationv1beta2.AddToScheme(scheme))
+	utilruntime.Must(newintegrationv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(tektonv1.AddToScheme(scheme))
 	utilruntime.Must(resolutionv1beta1.AddToScheme(scheme))
 	utilruntime.Must(releasev1alpha1.AddToScheme(scheme))

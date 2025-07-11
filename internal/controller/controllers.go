@@ -24,6 +24,8 @@ import (
 	"github.com/konflux-ci/integration-service/internal/controller/scenario"
 	"github.com/konflux-ci/integration-service/internal/controller/snapshot"
 	"github.com/konflux-ci/integration-service/internal/controller/statusreport"
+	"github.com/konflux-ci/integration-service/internal/controller/testsubject"
+	"github.com/konflux-ci/integration-service/internal/controller/testsubjectconstructor"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
@@ -36,6 +38,8 @@ var setupFunctions = []func(manager.Manager, *logr.Logger) error{
 	scenario.SetupController,
 	statusreport.SetupController,
 	component.SetupController,
+	testsubject.SetupController,
+	testsubjectconstructor.SetupController,
 }
 
 // SetupControllers invoke all SetupController functions defined in setupFunctions, setting all controllers up and
