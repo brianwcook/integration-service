@@ -1,221 +1,257 @@
-# Integration Test Suite
+# Integration Tests - Kind-based Real Kubernetes Testing
 
-This directory contains a comprehensive integration test suite for the integration-service, designed to replace the old e2e tests with a modern, reliable testing framework using Kind.
+This directory contains **real** integration tests for the Integration Service that run against a live Kubernetes cluster using Kind and Podman.
 
 ## Overview
 
-The integration test suite provides:
+These tests replace the previous envtest-based approach with real Kubernetes clusters to provide more accurate integration testing. The tests validate:
 
-- **Real Kubernetes Environment**: Uses Kind to create actual Kubernetes clusters for testing
-- **Complete Workflow Testing**: Tests the entire build-to-test workflow end-to-end
-- **Controller Integration**: Tests all controllers working together
-- **Scenario Coverage**: Covers various integration scenarios including error cases
-- **Fast Execution**: Optimized for quick feedback in CI/CD pipelines
+- **ADR-0033 TestSubjectConstructor workflow** - Complete build-to-test automation
+- **Multi-component TestSubject management** - Cumulative component builds
+- **TestSubject validation webhooks** - API validation and security
+- **Error handling and resilience** - Graceful degradation
+- **Controller health monitoring** - Service availability checks
+
+## Prerequisites
+
+- **Podman Desktop** (Do NOT install Docker - uses Podman as container runtime)
+- **Kind** (Kubernetes in Docker/Podman)
+- **kubectl** (Kubernetes CLI)
+- **Go 1.21+** (for running tests)
 
 ## Architecture
 
-The test suite consists of:
-
-- **`integration_test_suite.go`**: Main test suite setup with envtest framework
-- **`end_to_end_test.go`**: Comprehensive end-to-end test scenarios
-- **`Makefile`**: Automation for running tests with Kind
-- **`kind-config.yaml`**: Kind cluster configuration
-- **Helper functions**: Utilities for creating test resources
-
-## Test Scenarios
-
-### 1. Complete Build-to-Test Workflow
-Tests the full pipeline from build completion to integration test execution:
-- TestSubjectConstructor watches for successful builds
-- Automatically creates TestSubject with extracted component data
-- Finds matching IntegrationTestScenarios
-- Creates and executes integration test PipelineRuns
-
-### 2. TestSubject Group Management
-Tests the control TestSubject pattern:
-- First component build creates initial TestSubject
-- Second component build creates new TestSubject with both components
-- Proper label management and component aggregation
-
-### 3. Label Selector Matching
-Tests the flexibility of label-based selection:
-- Multiple applications with different labels
-- Scenarios only run for matching TestSubjects
-- No cross-contamination between applications
-
-### 4. Optional Test Handling
-Tests required vs optional integration tests:
-- Both required and optional scenarios are executed
-- Proper labeling of optional tests
-- Correct failure handling for optional tests
-
-### 5. Error Handling
-Tests robustness and error recovery:
-- Invalid JQ expressions in TestSubjectConstructor
-- Missing or malformed resources
-- Controller resilience to failures
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────────┐
+│  Kind Cluster   │    │  Test Namespace  │    │  Integration Tests  │
+│                 │    │                  │    │                     │
+│  ┌───────────┐  │    │  ┌─────────────┐ │    │  ┌───────────────┐  │
+│  │ Tekton    │  │    │  │ TestSubject │ │    │  │ Ginkgo Specs  │  │
+│  │ Pipelines │  │    │  │ Constructor │ │    │  │               │  │
+│  └───────────┘  │    │  └─────────────┘ │    │  └───────────────┘  │
+│                 │    │                  │    │                     │
+│  ┌───────────┐  │    │  ┌─────────────┐ │    │  ┌───────────────┐  │
+│  │Integration│  │    │  │ Integration │ │    │  │ Test Helpers  │  │
+│  │Service    │  │    │  │ Test        │ │    │  │               │  │
+│  │Controllers│  │    │  │ Scenarios   │ │    │  └───────────────┘  │
+│  └───────────┘  │    │  └─────────────┘ │    │                     │
+└─────────────────┘    └──────────────────┘    └─────────────────────┘
+```
 
 ## Running Tests
-
-### Prerequisites
-
-- Docker
-- Kind
-- kubectl
-- Go 1.21+
-- Ginkgo v2
 
 ### Quick Start
 
 ```bash
-# Run tests with automatic Kind cluster management
+# Run complete test suite with Kind cluster
 make test-with-kind
 
-# Or run individual steps
+# Run tests against existing cluster
+make test
+```
+
+### Manual Setup
+
+```bash
+# 1. Create Kind cluster with registry
 make kind-up
-make install-crds
+
+# 2. Install dependencies (Tekton, CRDs)
 make install-tekton
+make install-crds
+
+# 3. Deploy integration service
+make deploy-integration-service
+
+# 4. Run tests
 make run-tests
+
+# 5. Clean up
 make kind-down
 ```
 
-### Development Workflow
+### Available Make Targets
 
-```bash
-# Setup test environment once
-make setup-test-env
-
-# Run tests multiple times during development
-make test
-
-# Debug issues
-make debug
-make logs
-
-# Clean up when done
-make clean
-```
-
-### Environment Variables
-
-- `KIND_CLUSTER_NAME`: Name of the Kind cluster (default: integration-test)
-- `REGISTRY_PORT`: Port for the local registry (default: 5001)
-- `TIMEOUT`: Test timeout (default: 30m)
+| Target | Description |
+|--------|-------------|
+| `test-with-kind` | Full test suite with cluster setup/teardown |
+| `test` | Run tests against existing cluster |
+| `kind-up` | Create Kind cluster with registry |
+| `kind-down` | Delete Kind cluster and registry |
+| `install-tekton` | Install Tekton Pipelines |
+| `install-crds` | Install Integration Service CRDs |
+| `deploy-integration-service` | Deploy controllers |
+| `setup-test-env` | Setup complete test environment |
+| `logs` | Show controller logs |
+| `debug` | Show cluster debug information |
+| `help` | Show all available targets |
 
 ## Test Structure
 
-### Suite Setup
-The test suite uses the envtest framework to:
-1. Start a real Kubernetes API server
-2. Install all required CRDs
-3. Start the integration-service controllers
-4. Provide a clean environment for each test
+### Core Test Scenarios
 
-### Test Helpers
-Common helper functions provide:
-- Namespace management
-- Resource creation (TestSubject, IntegrationTestScenario, etc.)
-- Waiting for resources to be created/updated
-- Assertions for complex scenarios
+#### 1. ADR-0033 TestSubjectConstructor Workflow
+Tests the complete build-to-test automation:
+- Creates TestSubjectConstructor to watch build PipelineRuns
+- Simulates successful component builds
+- Verifies TestSubject creation with correct component metadata
+- Validates integration test PipelineRun creation and parameters
 
-### Test Isolation
-Each test runs in its own namespace to ensure:
-- No interference between tests
-- Clean state for each scenario
-- Parallel test execution capability
+#### 2. Multi-Component TestSubject Management
+Tests cumulative component builds:
+- Creates multiple component builds over time
+- Verifies TestSubjects are updated with new components
+- Validates component metadata aggregation
 
-## CI/CD Integration
+#### 3. TestSubject Validation Webhook
+Tests API validation:
+- Attempts to create invalid TestSubjects
+- Verifies webhook rejection of malformed resources
+- Confirms valid TestSubjects are accepted
 
-The test suite is designed for CI/CD pipelines:
+#### 4. Error Handling and Resilience
+Tests graceful degradation:
+- Creates TestSubjectConstructors with invalid JQ expressions
+- Verifies no TestSubjects are created from invalid configurations
+- Tests controller recovery from errors
 
-```bash
-# In CI pipeline
-make test-with-kind
+#### 5. Integration Service Controller Health
+Tests service availability:
+- Verifies all controllers are running and healthy
+- Confirms Tekton is operational
+- Validates cluster connectivity
+
+### Test Helper Functions
+
+The test suite includes comprehensive helper functions:
+
+```go
+// Namespace management
+CreateTestNamespace() string
+DeleteTestNamespace(name string)
+
+// TestSubject operations
+WaitForTestSubject(namespace, name string)
+WaitForTestSubjectWithLabel(namespace, labelKey, labelValue string)
+
+// PipelineRun operations
+WaitForPipelineRun(namespace, labelKey, labelValue string)
+CreateSuccessfulBuildPipelineRun(namespace, componentName, imageURL string)
+
+// Resource creation
+CreateIntegrationTestScenario(namespace, name, groupLabel string, optional bool)
+CreateTestSubjectConstructor(namespace, name, groupLabel string)
 ```
 
-This command:
-1. Creates a Kind cluster
-2. Installs dependencies
-3. Runs all tests
-4. Cleans up resources
-5. Reports results
+## Container Engine Configuration
 
-## Extending Tests
+The tests use **Podman** as the container engine instead of Docker:
 
-### Adding New Test Scenarios
+```makefile
+# Uses Podman path
+CONTAINER_ENGINE := /opt/podman/bin/podman
 
-1. Create test functions in `end_to_end_test.go`
-2. Use existing helper functions for resource creation
-3. Follow the pattern of setup → action → verification
-4. Use descriptive test names and `By()` statements
+# Kind uses Podman provider
+KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster
+```
 
-### Adding New Helper Functions
+## Debugging
 
-1. Add helpers to `integration_test_suite.go`
-2. Follow naming convention: `CreateXXX`, `WaitForXXX`, `VerifyXXX`
-3. Use Eventually/Consistently for async operations
-4. Include proper error handling
+### View Controller Logs
+```bash
+make logs
+```
 
-### Testing New Controllers
+### Debug Cluster State
+```bash
+make debug
+```
 
-1. Update `SetupControllers()` to include new controllers
-2. Add required CRDs to the test environment
-3. Create helper functions for new resource types
-4. Write focused tests for new functionality
+### Manual Inspection
+```bash
+# Connect to cluster
+kubectl config use-context kind-integration-test
+
+# View resources
+kubectl get testsubjects -A
+kubectl get integrationtestscenarios -A
+kubectl get pipelineruns -A
+
+# View controller status
+kubectl get pods -n integration-service-system
+kubectl get pods -n tekton-pipelines
+```
+
+## Configuration
+
+### Kind Cluster Configuration
+See `kind-config.yaml` for cluster setup including:
+- Container registry configuration
+- Networking settings
+- Feature gates
+- Port mappings
+
+### Test Environment Variables
+- `KUBECONFIG`: Path to kubeconfig file
+- `KIND_PROVIDER`: Set to `podman` for Podman runtime
+- `TIMEOUT`: Test timeout (default: 30m)
+
+## Differences from envtest
+
+| Aspect | envtest (Old) | Kind (New) |
+|--------|---------------|------------|
+| **Environment** | Simulated API server | Real Kubernetes cluster |
+| **Controllers** | In-process | Deployed in cluster |
+| **Networking** | Mocked | Real cluster networking |
+| **Webhooks** | Local webhook server | Real admission webhooks |
+| **Tekton** | Not available | Full Tekton Pipelines |
+| **Realism** | Limited | Production-like |
+| **Performance** | Fast | Slower but more accurate |
+| **Debugging** | Difficult | Standard kubectl debugging |
+
+## Contributing
+
+When adding new tests:
+
+1. **Use test helpers** for common operations
+2. **Create isolated namespaces** for each test
+3. **Wait for resources** rather than sleep
+4. **Clean up resources** in AfterEach blocks
+5. **Test real workflows** end-to-end
+6. **Verify both success and failure** cases
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Kind cluster creation fails**
-   - Check Docker is running
-   - Verify Kind is installed
-   - Check port availability
-
-2. **Tests timeout**
-   - Increase timeout with `TIMEOUT=60m`
-   - Check resource quotas
-   - Verify controller logs
-
-3. **CRD installation fails**
-   - Ensure CRDs are up to date
-   - Check RBAC permissions
-   - Verify cluster connectivity
-
-### Debug Commands
-
+**Kind cluster creation fails:**
 ```bash
-# Check cluster status
-make debug
+# Ensure Podman is running
+podman system info
 
-# View controller logs
-make logs
-
-# Manual cluster inspection
-kubectl get pods --all-namespaces
-kubectl describe crd integrationtestscenarios.integration.konflux-ci.dev
+# Check Kind provider
+KIND_EXPERIMENTAL_PROVIDER=podman kind get clusters
 ```
 
-## Performance Considerations
+**Tests timeout:**
+```bash
+# Check controller logs
+make logs
 
-The test suite is optimized for:
-- Fast startup (< 2 minutes)
-- Efficient resource usage
-- Parallel test execution
-- Quick cleanup
+# Verify cluster health
+make debug
+```
 
-Typical execution times:
-- Full suite: 10-15 minutes
-- Individual test: 30-60 seconds
-- Setup/teardown: 2-3 minutes
+**Registry issues:**
+```bash
+# Check registry connectivity
+podman ps | grep registry
+```
 
-## Migration from Old E2E Tests
+**Resource not found:**
+```bash
+# Verify CRDs are installed
+kubectl get crd | grep integration
+```
 
-This new integration test suite replaces the old e2e tests with:
-- **Better Reliability**: Real Kubernetes environment vs mocked
-- **Faster Execution**: Optimized setup and parallel execution
-- **Better Coverage**: More comprehensive scenarios
-- **Easier Maintenance**: Clear structure and helper functions
-- **CI/CD Friendly**: Designed for automation
-
-The old e2e tests can be safely removed once this suite is fully validated. 
+For more help, see the main project documentation or open an issue. 

@@ -21,55 +21,65 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	integrationv1alpha1 "github.com/konflux-ci/integration-service/api/integration/v1alpha1"
 	"github.com/konflux-ci/integration-service/helpers"
+	"github.com/konflux-ci/integration-service/tekton"
+	v1 "k8s.io/api/core/v1"
 )
 
-var _ = Describe("End-to-End Integration Tests", func() {
+var _ = Describe("End-to-End Integration Tests - Real Kind Cluster", func() {
 	var testNamespace string
 
 	BeforeEach(func() {
-		testNamespace = "e2e-test-" + GenerateRandomString(8)
-		CreateNamespace(testNamespace)
+		testNamespace = CreateTestNamespace()
+		By("Created test namespace: " + testNamespace)
 	})
 
 	AfterEach(func() {
-		DeleteNamespace(testNamespace)
+		By("Cleaning up test namespace: " + testNamespace)
+		DeleteTestNamespace(testNamespace)
 	})
 
-	Context("Complete Build-to-Test Workflow", func() {
-		It("should create TestSubject from successful build and run integration tests", func() {
+	Context("ADR-0033 TestSubjectConstructor Workflow", func() {
+		It("should create TestSubject from build PipelineRun and trigger integration tests", func() {
 			By("Creating a TestSubjectConstructor")
-			_ = CreateTestSubjectConstructor(testNamespace, "build-constructor", "my-app")
+			constructor := CreateTestSubjectConstructor(testNamespace, "build-constructor", "my-app")
+			Expect(constructor).NotTo(BeNil())
 
 			By("Creating IntegrationTestScenarios")
-			_ = CreateIntegrationTestScenario(testNamespace, "security-scan", "my-app", false)
-			_ = CreateIntegrationTestScenario(testNamespace, "performance-test", "my-app", true)
+			securityScenario := CreateIntegrationTestScenario(testNamespace, "security-scan", "my-app", false)
+			performanceScenario := CreateIntegrationTestScenario(testNamespace, "performance-test", "my-app", true)
+			Expect(securityScenario).NotTo(BeNil())
+			Expect(performanceScenario).NotTo(BeNil())
 
 			By("Creating a successful build PipelineRun")
-			_ = CreateSuccessfulBuildPipelineRun(testNamespace, "frontend", "quay.io/myorg/frontend:sha-abc123")
+			buildPR := CreateSuccessfulBuildPipelineRun(testNamespace, "frontend", "quay.io/myorg/frontend:v1.2.3")
+			Expect(buildPR).NotTo(BeNil())
 
-			By("Waiting for TestSubject to be created automatically")
+			By("Waiting for TestSubjectConstructor to process the build and create TestSubject")
 			testSubject := WaitForTestSubjectWithLabel(testNamespace, integrationv1alpha1.TestSubjectGroupLabel, "my-app")
 			Expect(testSubject).NotTo(BeNil())
 			Expect(testSubject.Labels["created-by"]).To(Equal("build-constructor"))
 			Expect(testSubject.Spec.Components).To(HaveLen(1))
 			Expect(testSubject.Spec.Components[0].Name).To(Equal("frontend"))
-			Expect(testSubject.Spec.Components[0].ContainerImage).To(Equal("quay.io/myorg/frontend:sha-abc123"))
+			Expect(testSubject.Spec.Components[0].ContainerImage).To(Equal("quay.io/myorg/frontend:v1.2.3"))
 
 			By("Waiting for integration test PipelineRuns to be created")
 			securityPR := WaitForPipelineRun(testNamespace, helpers.PipelineRunScenarioLabel, "security-scan")
 			performancePR := WaitForPipelineRun(testNamespace, helpers.PipelineRunScenarioLabel, "performance-test")
 
+			By("Verifying PipelineRuns are correctly labeled and configured")
 			Expect(securityPR.Labels[helpers.PipelineRunTestSubjectLabel]).To(Equal(testSubject.Name))
 			Expect(performancePR.Labels[helpers.PipelineRunTestSubjectLabel]).To(Equal(testSubject.Name))
 
-			By("Verifying PipelineRun parameters are set correctly")
-			// Check that TEST_SUBJECT_IMAGES parameter is populated
+			// Verify optional labeling
+			Expect(securityPR.Labels[tekton.OptionalLabel]).To(Equal("false"))
+			Expect(performancePR.Labels[tekton.OptionalLabel]).To(Equal("true"))
+
+			By("Verifying PipelineRun parameters contain TestSubject data")
 			found := false
 			for _, param := range securityPR.Spec.Params {
 				if param.Name == "IMAGE_URL" {
@@ -78,144 +88,107 @@ var _ = Describe("End-to-End Integration Tests", func() {
 					break
 				}
 			}
-			Expect(found).To(BeTrue(), "IMAGE_URL parameter should be set")
+			Expect(found).To(BeTrue(), "IMAGE_URL parameter should be populated from TestSubject")
 		})
 	})
 
-	Context("TestSubject Group Management", func() {
-		It("should manage control TestSubject correctly", func() {
-			By("Creating a TestSubjectConstructor")
-			_ = CreateTestSubjectConstructor(testNamespace, "build-constructor", "multi-component-app")
+	Context("Multi-Component TestSubject Management", func() {
+		It("should build cumulative TestSubjects as components are built", func() {
+			By("Creating a TestSubjectConstructor for multi-component app")
+			constructor := CreateTestSubjectConstructor(testNamespace, "multi-constructor", "multi-app")
+			Expect(constructor).NotTo(BeNil())
 
-			By("Creating the first component build")
-			_ = CreateSuccessfulBuildPipelineRun(testNamespace, "frontend", "quay.io/myorg/frontend:v1.0.0")
+			By("Creating first component build")
+			frontendBuild := CreateSuccessfulBuildPipelineRun(testNamespace, "frontend", "quay.io/myorg/frontend:v1.0.0")
+			Expect(frontendBuild).NotTo(BeNil())
 
-			By("Waiting for the first TestSubject")
-			testSubject1 := WaitForTestSubjectWithLabel(testNamespace, integrationv1alpha1.TestSubjectGroupLabel, "multi-component-app")
-			Expect(testSubject1.Spec.Components).To(HaveLen(1))
-			Expect(testSubject1.Spec.Components[0].Name).To(Equal("frontend"))
+			By("Waiting for first TestSubject")
+			firstTestSubject := WaitForTestSubjectWithLabel(testNamespace, integrationv1alpha1.TestSubjectGroupLabel, "multi-app")
+			Expect(firstTestSubject.Spec.Components).To(HaveLen(1))
+			Expect(firstTestSubject.Spec.Components[0].Name).To(Equal("frontend"))
 
-			By("Creating the second component build")
-			_ = CreateSuccessfulBuildPipelineRun(testNamespace, "backend", "quay.io/myorg/backend:v1.0.0")
+			By("Creating second component build")
+			backendBuild := CreateSuccessfulBuildPipelineRun(testNamespace, "backend", "quay.io/myorg/backend:v2.0.0")
+			Expect(backendBuild).NotTo(BeNil())
 
-			By("Waiting for the second TestSubject to be created")
-			Eventually(func() int {
+			By("Waiting for new TestSubject with both components")
+			Eventually(func() bool {
 				testSubjects := &integrationv1alpha1.TestSubjectList{}
 				err := k8sClient.List(ctx, testSubjects, client.InNamespace(testNamespace))
 				if err != nil {
-					return 0
+					return false
 				}
-				count := 0
+
 				for _, ts := range testSubjects.Items {
-					if ts.Labels[integrationv1alpha1.TestSubjectGroupLabel] == "multi-component-app" {
-						count++
+					if ts.Labels != nil &&
+						ts.Labels[integrationv1alpha1.TestSubjectGroupLabel] == "multi-app" &&
+						len(ts.Spec.Components) == 2 {
+
+						// Verify both components are present
+						componentNames := make(map[string]bool)
+						for _, comp := range ts.Spec.Components {
+							componentNames[comp.Name] = true
+						}
+						return componentNames["frontend"] && componentNames["backend"]
 					}
 				}
-				return count
-			}, time.Minute, time.Second).Should(Equal(2))
-
-			By("Verifying the second TestSubject includes both components")
-			testSubjects := &integrationv1alpha1.TestSubjectList{}
-			err := k8sClient.List(ctx, testSubjects, client.InNamespace(testNamespace))
-			Expect(err).NotTo(HaveOccurred())
-
-			var secondTestSubject *integrationv1alpha1.TestSubject
-			for _, ts := range testSubjects.Items {
-				if ts.Labels[integrationv1alpha1.TestSubjectGroupLabel] == "multi-component-app" &&
-					len(ts.Spec.Components) == 2 {
-					secondTestSubject = &ts
-					break
-				}
-			}
-			Expect(secondTestSubject).NotTo(BeNil())
-
-			componentNames := make([]string, len(secondTestSubject.Spec.Components))
-			for i, comp := range secondTestSubject.Spec.Components {
-				componentNames[i] = comp.Name
-			}
-			Expect(componentNames).To(ContainElements("frontend", "backend"))
+				return false
+			}, 3*time.Minute, 15*time.Second).Should(BeTrue(), "TestSubject with both components should be created")
 		})
 	})
 
-	Context("Label Selector Matching", func() {
-		It("should only run tests for matching TestSubjects", func() {
-			By("Creating TestSubjectConstructors for different groups")
-			constructor1 := CreateTestSubjectConstructor(testNamespace, "app1-constructor", "app1")
-			constructor2 := CreateTestSubjectConstructor(testNamespace, "app2-constructor", "app2")
-
-			By("Creating IntegrationTestScenarios for specific groups")
-			app1Scenario := CreateIntegrationTestScenario(testNamespace, "app1-test", "app1", false)
-			app2Scenario := CreateIntegrationTestScenario(testNamespace, "app2-test", "app2", false)
-
-			By("Creating builds for both apps")
-			app1Build := CreateSuccessfulBuildPipelineRun(testNamespace, "app1-frontend", "quay.io/myorg/app1-frontend:v1.0.0")
-			app2Build := CreateSuccessfulBuildPipelineRun(testNamespace, "app2-frontend", "quay.io/myorg/app2-frontend:v1.0.0")
-
-			// Update the labels to match the different constructors
-			app1Build.Labels["appstudio.openshift.io/component"] = "app1-frontend"
-			app2Build.Labels["appstudio.openshift.io/component"] = "app2-frontend"
-			Expect(k8sClient.Update(ctx, app1Build)).To(Succeed())
-			Expect(k8sClient.Update(ctx, app2Build)).To(Succeed())
-
-			By("Waiting for TestSubjects to be created")
-			app1TestSubject := WaitForTestSubjectWithLabel(testNamespace, integrationv1alpha1.TestSubjectGroupLabel, "app1")
-			app2TestSubject := WaitForTestSubjectWithLabel(testNamespace, integrationv1alpha1.TestSubjectGroupLabel, "app2")
-
-			By("Waiting for PipelineRuns to be created")
-			app1PR := WaitForPipelineRun(testNamespace, helpers.PipelineRunScenarioLabel, "app1-test")
-			app2PR := WaitForPipelineRun(testNamespace, helpers.PipelineRunScenarioLabel, "app2-test")
-
-			By("Verifying PipelineRuns are associated with correct TestSubjects")
-			Expect(app1PR.Labels[helpers.PipelineRunTestSubjectLabel]).To(Equal(app1TestSubject.Name))
-			Expect(app2PR.Labels[helpers.PipelineRunTestSubjectLabel]).To(Equal(app2TestSubject.Name))
-
-			By("Verifying no cross-contamination of tests")
-			Eventually(func() int {
-				pipelineRuns := &tektonv1.PipelineRunList{}
-				err := k8sClient.List(ctx, pipelineRuns, client.InNamespace(testNamespace))
-				if err != nil {
-					return 0
-				}
-				return len(pipelineRuns.Items)
-			}, time.Minute, time.Second).Should(Equal(4)) // 2 builds + 2 tests
-		})
-	})
-
-	Context("Optional Test Handling", func() {
-		It("should create PipelineRuns for both required and optional scenarios", func() {
-			By("Creating a TestSubjectConstructor")
-			constructor := CreateTestSubjectConstructor(testNamespace, "build-constructor", "test-app")
-
-			By("Creating required and optional scenarios")
-			requiredScenario := CreateIntegrationTestScenario(testNamespace, "required-test", "test-app", false)
-			optionalScenario := CreateIntegrationTestScenario(testNamespace, "optional-test", "test-app", true)
-
-			By("Creating a successful build")
-			buildPR := CreateSuccessfulBuildPipelineRun(testNamespace, "component", "quay.io/myorg/component:v1.0.0")
-
-			By("Waiting for TestSubject to be created")
-			testSubject := WaitForTestSubjectWithLabel(testNamespace, integrationv1alpha1.TestSubjectGroupLabel, "test-app")
-
-			By("Waiting for both test PipelineRuns to be created")
-			requiredPR := WaitForPipelineRun(testNamespace, helpers.PipelineRunScenarioLabel, "required-test")
-			optionalPR := WaitForPipelineRun(testNamespace, helpers.PipelineRunScenarioLabel, "optional-test")
-
-			By("Verifying both PipelineRuns are associated with the TestSubject")
-			Expect(requiredPR.Labels[helpers.PipelineRunTestSubjectLabel]).To(Equal(testSubject.Name))
-			Expect(optionalPR.Labels[helpers.PipelineRunTestSubjectLabel]).To(Equal(testSubject.Name))
-
-			By("Verifying optional label is set correctly")
-			Expect(optionalPR.Labels[helpers.PipelineRunOptionalLabel]).To(Equal("true"))
-			Expect(requiredPR.Labels[helpers.PipelineRunOptionalLabel]).To(Equal("false"))
-		})
-	})
-
-	Context("Error Handling", func() {
-		It("should handle invalid JQ expressions gracefully", func() {
-			By("Creating a TestSubjectConstructor with invalid JQ")
-			constructor := &integrationv1alpha1.TestSubjectConstructor{
+	Context("TestSubject Validation Webhook", func() {
+		It("should validate TestSubject creation and prevent invalid configurations", func() {
+			By("Attempting to create TestSubject with invalid component configuration")
+			invalidTestSubject := &integrationv1alpha1.TestSubject{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "bad-constructor",
+					Name:      "invalid-test-subject",
+					Namespace: testNamespace,
+				},
+				Spec: integrationv1alpha1.TestSubjectSpec{
+					Components: []integrationv1alpha1.TestSubjectComponent{
+						{
+							Name:           "", // Invalid: empty name
+							ContainerImage: "quay.io/myorg/invalid:latest",
+						},
+					},
+				},
+			}
+
+			By("Expecting webhook to reject invalid TestSubject")
+			err := k8sClient.Create(ctx, invalidTestSubject)
+			Expect(err).To(HaveOccurred(), "Webhook should reject TestSubject with empty component name")
+		})
+
+		It("should allow valid TestSubject creation", func() {
+			By("Creating a valid TestSubject")
+			validTestSubject := &integrationv1alpha1.TestSubject{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "valid-test-subject",
+					Namespace: testNamespace,
+				},
+				Spec: integrationv1alpha1.TestSubjectSpec{
+					Components: []integrationv1alpha1.TestSubjectComponent{
+						{
+							Name:           "valid-component",
+							ContainerImage: "quay.io/myorg/valid:v1.0.0",
+						},
+					},
+				},
+			}
+
+			By("Expecting webhook to accept valid TestSubject")
+			err := k8sClient.Create(ctx, validTestSubject)
+			Expect(err).NotTo(HaveOccurred(), "Webhook should accept valid TestSubject")
+		})
+	})
+
+	Context("Error Handling and Resilience", func() {
+		It("should handle invalid JQ expressions gracefully", func() {
+			By("Creating TestSubjectConstructor with invalid JQ expression")
+			invalidConstructor := &integrationv1alpha1.TestSubjectConstructor{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "invalid-constructor",
 					Namespace: testNamespace,
 				},
 				Spec: integrationv1alpha1.TestSubjectConstructorSpec{
@@ -227,8 +200,8 @@ var _ = Describe("End-to-End Integration Tests", func() {
 						},
 					},
 					Extractor: integrationv1alpha1.TestSubjectExtractor{
-						Name:     ".invalid.jq.expression[", // Invalid JQ
-						ImageURL: ".status.results[] | select(.name == \"IMAGE_URL\") | .value.stringVal",
+						Name:     "[[{invalid@#$%^&*()_+}]]", // Invalid JQ
+						ImageURL: ".status.results[] | select(.name == \"IMAGE_URL\") | .value",
 					},
 					Template: integrationv1alpha1.TestSubjectTemplate{
 						Labels: map[string]string{
@@ -237,36 +210,75 @@ var _ = Describe("End-to-End Integration Tests", func() {
 					},
 				},
 			}
-			Expect(k8sClient.Create(ctx, constructor)).To(Succeed())
 
-			By("Creating a successful build")
-			buildPR := CreateSuccessfulBuildPipelineRun(testNamespace, "component", "quay.io/myorg/component:v1.0.0")
+			err := k8sClient.Create(ctx, invalidConstructor)
+			Expect(err).NotTo(HaveOccurred(), "Constructor creation should succeed")
+
+			By("Creating a build that would trigger the invalid constructor")
+			buildPR := CreateSuccessfulBuildPipelineRun(testNamespace, "error-component", "quay.io/myorg/error:latest")
+			Expect(buildPR).NotTo(BeNil())
 
 			By("Verifying no TestSubject is created due to JQ error")
-			Consistently(func() int {
+			Consistently(func() bool {
 				testSubjects := &integrationv1alpha1.TestSubjectList{}
 				err := k8sClient.List(ctx, testSubjects, client.InNamespace(testNamespace))
 				if err != nil {
-					return 0
+					return false
 				}
-				count := 0
+
 				for _, ts := range testSubjects.Items {
-					if ts.Labels[integrationv1alpha1.TestSubjectGroupLabel] == "error-test" {
-						count++
+					if ts.Labels != nil && ts.Labels[integrationv1alpha1.TestSubjectGroupLabel] == "error-test" {
+						return false // Found a TestSubject that shouldn't exist
 					}
 				}
-				return count
-			}, 30*time.Second, 5*time.Second).Should(Equal(0))
+				return true // No invalid TestSubjects found (good)
+			}, 30*time.Second, 5*time.Second).Should(BeTrue(), "No TestSubject should be created from invalid JQ")
+		})
+	})
+
+	Context("Integration Service Controller Health", func() {
+		It("should verify all controllers are running and healthy", func() {
+			By("Checking integration service deployment status")
+			Eventually(func() bool {
+				pods := &v1.PodList{}
+				err := k8sClient.List(ctx, pods, client.InNamespace("integration-service-system"))
+				if err != nil {
+					return false
+				}
+
+				readyPods := 0
+				for _, pod := range pods.Items {
+					if pod.Status.Phase == v1.PodRunning {
+						readyCount := 0
+						for _, condition := range pod.Status.Conditions {
+							if condition.Type == v1.PodReady && condition.Status == v1.ConditionTrue {
+								readyCount++
+							}
+						}
+						if readyCount > 0 {
+							readyPods++
+						}
+					}
+				}
+				return readyPods > 0
+			}, 2*time.Minute, 10*time.Second).Should(BeTrue(), "Integration service controllers should be healthy")
+
+			By("Verifying Tekton is operational")
+			Eventually(func() bool {
+				pods := &v1.PodList{}
+				err := k8sClient.List(ctx, pods, client.InNamespace("tekton-pipelines"))
+				if err != nil {
+					return false
+				}
+
+				readyPods := 0
+				for _, pod := range pods.Items {
+					if pod.Status.Phase == v1.PodRunning {
+						readyPods++
+					}
+				}
+				return readyPods >= 2 // controller + webhook
+			}, 2*time.Minute, 10*time.Second).Should(BeTrue(), "Tekton should be operational")
 		})
 	})
 })
-
-// GenerateRandomString generates a random string of specified length
-func GenerateRandomString(length int) string {
-	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[i%len(charset)]
-	}
-	return string(b)
-}

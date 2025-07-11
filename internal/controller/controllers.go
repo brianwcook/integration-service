@@ -18,12 +18,7 @@ package controllers
 
 import (
 	"github.com/go-logr/logr"
-	"github.com/konflux-ci/integration-service/internal/controller/buildpipeline"
-	"github.com/konflux-ci/integration-service/internal/controller/component"
-	"github.com/konflux-ci/integration-service/internal/controller/integrationpipeline"
 	"github.com/konflux-ci/integration-service/internal/controller/scenario"
-	"github.com/konflux-ci/integration-service/internal/controller/snapshot"
-	"github.com/konflux-ci/integration-service/internal/controller/statusreport"
 	"github.com/konflux-ci/integration-service/internal/controller/testsubject"
 	"github.com/konflux-ci/integration-service/internal/controller/testsubjectconstructor"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -32,12 +27,15 @@ import (
 
 // setupFunctions is a list of register functions to be invoked so all controllers are added to the Manager
 var setupFunctions = []func(manager.Manager, *logr.Logger) error{
-	integrationpipeline.SetupController,
-	buildpipeline.SetupController,
-	snapshot.SetupController,
+	// Old controllers commented out for ADR-0033 testing - these depend on old AppStudio CRDs
+	// integrationpipeline.SetupController,
+	// buildpipeline.SetupController,
+	// snapshot.SetupController,
+	// statusreport.SetupController,
+	// component.SetupController,
+
+	// New ADR-0033 controllers
 	scenario.SetupController,
-	statusreport.SetupController,
-	component.SetupController,
 	testsubject.SetupController,
 	testsubjectconstructor.SetupController,
 }

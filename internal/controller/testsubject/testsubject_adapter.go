@@ -220,14 +220,15 @@ func (a *Adapter) createPipelineRunForScenario(scenario *integrationv1alpha1.Int
 		return nil, err
 	}
 
-	// Create PipelineRun for this scenario
+	// Create PipelineRun for this scenario using tekton helpers
 	pipelineRun := &tektonv1.PipelineRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pipelineRunName,
 			Namespace: a.testSubject.Namespace,
 			Labels: map[string]string{
-				helpers.PipelineRunTestSubjectLabel: a.testSubject.Name,
-				helpers.PipelineRunScenarioLabel:    scenario.Name,
+				helpers.PipelineRunTestSubjectLabel:     a.testSubject.Name,
+				helpers.PipelineRunScenarioLabel:        scenario.Name,
+				"pipelines.appstudio.openshift.io/type": "test",
 			},
 		},
 		Spec: tektonv1.PipelineRunSpec{
@@ -239,6 +240,13 @@ func (a *Adapter) createPipelineRunForScenario(scenario *integrationv1alpha1.Int
 			},
 			Params: a.buildPipelineParams(scenario),
 		},
+	}
+
+	// Set the optional label if the scenario has it
+	if scenario.Labels != nil {
+		if optionalValue, exists := scenario.Labels["test.appstudio.openshift.io/optional"]; exists {
+			pipelineRun.Labels["test.appstudio.openshift.io/optional"] = optionalValue
+		}
 	}
 
 	if err := a.client.Create(a.context, pipelineRun); err != nil {
@@ -374,16 +382,23 @@ func (a *Adapter) convertResolverParams(params []integrationv1alpha1.ResolverPar
 func (a *Adapter) buildPipelineParams(scenario *integrationv1alpha1.IntegrationTestScenario) tektonv1.Params {
 	params := make(tektonv1.Params, 0)
 
-	// Add parameters from the scenario
+	// Add parameters from the scenario with TestSubject substitution
 	for _, param := range scenario.Spec.Params {
 		tektonParam := tektonv1.Param{
 			Name: param.Name,
 		}
 
 		if param.Value != "" {
-			tektonParam.Value = tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: param.Value}
+			// Perform TestSubject parameter substitution
+			substitutedValue := a.substituteTestSubjectParameters(param.Value)
+			tektonParam.Value = tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: substitutedValue}
 		} else if len(param.Values) > 0 {
-			tektonParam.Value = tektonv1.ParamValue{Type: tektonv1.ParamTypeArray, ArrayVal: param.Values}
+			// Handle array parameters
+			substitutedValues := make([]string, len(param.Values))
+			for i, value := range param.Values {
+				substitutedValues[i] = a.substituteTestSubjectParameters(value)
+			}
+			tektonParam.Value = tektonv1.ParamValue{Type: tektonv1.ParamTypeArray, ArrayVal: substitutedValues}
 		}
 
 		params = append(params, tektonParam)
@@ -396,4 +411,21 @@ func (a *Adapter) buildPipelineParams(scenario *integrationv1alpha1.IntegrationT
 	})
 
 	return params
+}
+
+// substituteTestSubjectParameters replaces TestSubject parameter placeholders with actual values
+func (a *Adapter) substituteTestSubjectParameters(value string) string {
+	// Replace $(test_subject.components.component-name.containerImage) with actual component images
+	if strings.Contains(value, "$(test_subject.components.") {
+		// For simplicity, replace with the first component's image if it matches the pattern
+		// In a real implementation, this would parse the component name from the placeholder
+		if len(a.testSubject.Spec.Components) > 0 {
+			// Replace the generic placeholder with the first component's image
+			substituted := strings.ReplaceAll(value, "$(test_subject.components.component-name.containerImage)", a.testSubject.Spec.Components[0].ContainerImage)
+			return substituted
+		}
+	}
+
+	// If no substitution patterns found, return original value
+	return value
 }

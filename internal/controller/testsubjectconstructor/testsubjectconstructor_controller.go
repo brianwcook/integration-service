@@ -171,12 +171,20 @@ func SetupController(manager ctrl.Manager, log *logr.Logger) error {
 // setupControllerWithManager sets up the controller with the Manager
 func setupControllerWithManager(manager ctrl.Manager, reconciler *Reconciler) error {
 	// Create the main controller for TestSubjectConstructor
-	return ctrl.NewControllerManagedBy(manager).
+	err := ctrl.NewControllerManagedBy(manager).
 		For(&integrationv1alpha1.TestSubjectConstructor{}).
 		Named("testsubjectconstructor").
+		Complete(reconciler)
+	if err != nil {
+		return err
+	}
+
+	// Create a separate controller for watching PipelineRuns
+	return ctrl.NewControllerManagedBy(manager).
+		Named("testsubjectconstructor-pipelinerun-watcher").
 		Watches(&tektonv1.PipelineRun{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				// This will trigger the ReconcileTriggeredResource method
+				// Send PipelineRun events to ReconcileTriggeredResource by using the PipelineRun name
 				return []reconcile.Request{
 					{NamespacedName: types.NamespacedName{
 						Name:      obj.GetName(),
@@ -209,7 +217,17 @@ func setupControllerWithManager(manager ctrl.Manager, reconciler *Reconciler) er
 				},
 			),
 		).
-		Complete(reconciler)
+		Complete(&TriggeredResourceReconciler{reconciler: reconciler})
+}
+
+// TriggeredResourceReconciler is a wrapper to handle PipelineRun events
+type TriggeredResourceReconciler struct {
+	reconciler *Reconciler
+}
+
+// Reconcile handles PipelineRun events and delegates to ReconcileTriggeredResource
+func (r *TriggeredResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	return r.reconciler.ReconcileTriggeredResource(ctx, req)
 }
 
 // isSuccessful checks if a PipelineRun completed successfully

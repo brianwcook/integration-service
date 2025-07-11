@@ -18,48 +18,36 @@ package integration
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
-	"net"
-	"path/filepath"
-	"runtime"
+	"os"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
-	resolutionv1beta1 "github.com/tektoncd/pipeline/pkg/apis/resolution/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"knative.dev/pkg/apis"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	integrationv1alpha1 "github.com/konflux-ci/integration-service/api/integration/v1alpha1"
-	controllers "github.com/konflux-ci/integration-service/internal/controller"
-	testsubjectwebhook "github.com/konflux-ci/integration-service/internal/webhook/v1alpha1"
 )
 
 var (
-	cfg       *rest.Config
 	k8sClient client.Client
-	testEnv   *envtest.Environment
 	ctx       context.Context
 	cancel    context.CancelFunc
-	mgr       ctrl.Manager
 )
 
 func TestIntegration(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Integration Test Suite")
+	RunSpecs(t, "Integration Test Suite - Kind Cluster")
 }
 
 var _ = BeforeSuite(func() {
@@ -67,108 +55,68 @@ var _ = BeforeSuite(func() {
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
-	By("bootstrapping test environment")
-	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "config", "crd", "bases"),
-		},
-		ErrorIfCRDPathMissing: true,
-		BinaryAssetsDirectory: filepath.Join("..", "..", "bin", "k8s",
-			fmt.Sprintf("1.28.3-%s-%s", runtime.GOOS, runtime.GOARCH)),
-		WebhookInstallOptions: envtest.WebhookInstallOptions{
-			Paths: []string{
-				filepath.Join("..", "..", "config", "webhook", "manifests.yaml"),
-			},
-		},
+	By("connecting to Kind cluster")
+
+	// Load kubeconfig to connect to the existing Kind cluster
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if kubeconfig == "" {
+		kubeconfig = os.Getenv("HOME") + "/.kube/config"
 	}
 
-	var err error
-	cfg, err = testEnv.Start()
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	Expect(err).NotTo(HaveOccurred())
-	Expect(cfg).NotTo(BeNil())
+	Expect(config).NotTo(BeNil())
 
 	// Add all required schemes
 	err = integrationv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = tektonv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
-	err = resolutionv1beta1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
 
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	k8sClient, err = client.New(config, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
 
-	// Create manager with webhook server
-	webhookInstallOptions := &testEnv.WebhookInstallOptions
-	mgr, err = ctrl.NewManager(cfg, ctrl.Options{
-		Scheme: scheme.Scheme,
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Host:    webhookInstallOptions.LocalServingHost,
-			Port:    webhookInstallOptions.LocalServingPort,
-			CertDir: webhookInstallOptions.LocalServingCertDir,
-		}),
-		LeaderElection: false,
-		Metrics:        metricsserver.Options{BindAddress: "0"},
-	})
+	By("verifying connection to cluster")
+	nodes := &corev1.NodeList{}
+	err = k8sClient.List(ctx, nodes)
 	Expect(err).NotTo(HaveOccurred())
+	Expect(len(nodes.Items)).To(BeNumerically(">", 0), "Cluster should have at least one node")
 
-	// Setup controllers
-	err = controllers.SetupControllers(mgr)
-	Expect(err).NotTo(HaveOccurred())
+	By("verifying integration service is deployed")
+	Eventually(func() error {
+		deployments := &corev1.PodList{}
+		return k8sClient.List(ctx, deployments, client.InNamespace("integration-service-system"))
+	}, 2*time.Minute, 10*time.Second).Should(Succeed())
 
-	// Setup TestSubject webhook
-	err = testsubjectwebhook.SetupTestSubjectWebhookWithManager(mgr)
-	Expect(err).NotTo(HaveOccurred())
-
-	// Start the manager
-	go func() {
-		defer GinkgoRecover()
-		err = mgr.Start(ctx)
-		Expect(err).NotTo(HaveOccurred(), "failed to run manager")
-	}()
-
-	// Wait for the manager to be ready
-	Eventually(func() bool {
-		return mgr.GetCache().WaitForCacheSync(ctx)
-	}, time.Minute, time.Second).Should(BeTrue())
-
-	// Wait for the webhook server to get ready
-	if webhookInstallOptions.LocalServingHost != "" {
-		dialer := &net.Dialer{Timeout: time.Second}
-		addrPort := fmt.Sprintf("%s:%d", webhookInstallOptions.LocalServingHost, webhookInstallOptions.LocalServingPort)
-		Eventually(func() error {
-			conn, err := tls.DialWithDialer(dialer, "tcp", addrPort, &tls.Config{InsecureSkipVerify: true})
-			if err != nil {
-				return err
-			}
-			return conn.Close()
-		}, time.Minute, time.Second).Should(Succeed())
-	}
+	By("verifying Tekton is installed")
+	Eventually(func() error {
+		pods := &corev1.PodList{}
+		return k8sClient.List(ctx, pods, client.InNamespace("tekton-pipelines"))
+	}, 2*time.Minute, 10*time.Second).Should(Succeed())
 })
 
 var _ = AfterSuite(func() {
 	cancel()
-	By("tearing down the test environment")
-	err := testEnv.Stop()
-	Expect(err).NotTo(HaveOccurred())
+	By("integration tests completed")
 })
 
-// Helper functions for integration tests
+// Helper functions for real integration tests
 
-// CreateNamespace creates a test namespace
-func CreateNamespace(name string) *corev1.Namespace {
+// CreateTestNamespace creates a test namespace with a unique name
+func CreateTestNamespace() string {
+	name := "integration-test-" + rand.String(8)
 	namespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
 	}
 	Expect(k8sClient.Create(ctx, namespace)).To(Succeed())
-	return namespace
+	return name
 }
 
-// DeleteNamespace deletes a test namespace
-func DeleteNamespace(name string) {
+// DeleteTestNamespace deletes a test namespace
+func DeleteTestNamespace(name string) {
 	namespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -185,7 +133,7 @@ func WaitForTestSubject(namespace, name string) *integrationv1alpha1.TestSubject
 			Namespace: namespace,
 			Name:      name,
 		}, testSubject)
-	}, time.Minute, time.Second).Should(Succeed())
+	}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	return testSubject
 }
 
@@ -200,17 +148,17 @@ func WaitForTestSubjectWithLabel(namespace, labelKey, labelValue string) *integr
 		}
 
 		for _, ts := range testSubjects.Items {
-			if ts.Labels[labelKey] == labelValue {
+			if ts.Labels != nil && ts.Labels[labelKey] == labelValue {
 				testSubject = &ts
 				return true
 			}
 		}
 		return false
-	}, time.Minute, time.Second).Should(BeTrue())
+	}, 6*time.Minute, 10*time.Second).Should(BeTrue())
 	return testSubject
 }
 
-// WaitForPipelineRun waits for a PipelineRun to exist
+// WaitForPipelineRun waits for a PipelineRun with specific label to exist
 func WaitForPipelineRun(namespace, labelKey, labelValue string) *tektonv1.PipelineRun {
 	var pipelineRun *tektonv1.PipelineRun
 	Eventually(func() bool {
@@ -221,30 +169,74 @@ func WaitForPipelineRun(namespace, labelKey, labelValue string) *tektonv1.Pipeli
 		}
 
 		for _, pr := range pipelineRuns.Items {
-			if pr.Labels[labelKey] == labelValue {
+			if pr.Labels != nil && pr.Labels[labelKey] == labelValue {
 				pipelineRun = &pr
 				return true
 			}
 		}
 		return false
-	}, time.Minute, time.Second).Should(BeTrue())
+	}, 6*time.Minute, 10*time.Second).Should(BeTrue())
 	return pipelineRun
 }
 
-// CreateSuccessfulBuildPipelineRun creates a successful build PipelineRun
+// CreateSuccessfulBuildPipelineRun creates a PipelineRun that simulates a successful build
 func CreateSuccessfulBuildPipelineRun(namespace, componentName, imageURL string) *tektonv1.PipelineRun {
 	pipelineRun := &tektonv1.PipelineRun{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "build-",
-			Namespace:    namespace,
+			Name:      fmt.Sprintf("build-%s-%s", componentName, rand.String(5)),
+			Namespace: namespace,
 			Labels: map[string]string{
 				"pipelines.appstudio.openshift.io/type": "build",
 				"appstudio.openshift.io/component":      componentName,
 			},
 		},
 		Spec: tektonv1.PipelineRunSpec{
-			PipelineRef: &tektonv1.PipelineRef{
-				Name: "dummy-pipeline",
+			// Use inline pipeline spec instead of referencing non-existent pipeline
+			PipelineSpec: &tektonv1.PipelineSpec{
+				// Declare results at the Pipeline level so they are available in PipelineRun status
+				Results: []tektonv1.PipelineResult{
+					{
+						Name:        "IMAGE_URL",
+						Description: "Built image URL",
+						Value:       tektonv1.ResultValue{Type: "string", StringVal: "$(tasks.build-task.results.IMAGE_URL)"},
+					},
+					{
+						Name:        "CHAINS-GIT_URL",
+						Description: "Git URL",
+						Value:       tektonv1.ResultValue{Type: "string", StringVal: "$(tasks.build-task.results.CHAINS-GIT_URL)"},
+					},
+					{
+						Name:        "CHAINS-GIT_COMMIT",
+						Description: "Git commit",
+						Value:       tektonv1.ResultValue{Type: "string", StringVal: "$(tasks.build-task.results.CHAINS-GIT_COMMIT)"},
+					},
+				},
+				Tasks: []tektonv1.PipelineTask{
+					{
+						Name: "build-task",
+						TaskSpec: &tektonv1.EmbeddedTask{
+							TaskSpec: tektonv1.TaskSpec{
+								Steps: []tektonv1.Step{
+									{
+										Name:  "build-and-set-results",
+										Image: "registry.access.redhat.com/ubi8/ubi-minimal:latest",
+										Script: fmt.Sprintf(`
+											echo 'Build completed successfully'
+											printf '%s' > $(results.IMAGE_URL.path)
+											printf 'https://github.com/myorg/%s' > $(results.CHAINS-GIT_URL.path)
+											printf 'abc123%s' > $(results.CHAINS-GIT_COMMIT.path)
+										`, imageURL, componentName, rand.String(6)),
+									},
+								},
+								Results: []tektonv1.TaskResult{
+									{Name: "IMAGE_URL", Description: "Built image URL"},
+									{Name: "CHAINS-GIT_URL", Description: "Git URL"},
+									{Name: "CHAINS-GIT_COMMIT", Description: "Git commit"},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
 		Status: tektonv1.PipelineRunStatus{
@@ -258,24 +250,26 @@ func CreateSuccessfulBuildPipelineRun(namespace, componentName, imageURL string)
 					},
 					{
 						Name:  "CHAINS-GIT_URL",
-						Value: *tektonv1.NewStructuredValues("https://github.com/myorg/" + componentName),
+						Value: *tektonv1.NewStructuredValues(fmt.Sprintf("https://github.com/myorg/%s", componentName)),
 					},
 					{
 						Name:  "CHAINS-GIT_COMMIT",
-						Value: *tektonv1.NewStructuredValues("abc123"),
+						Value: *tektonv1.NewStructuredValues("abc123" + rand.String(6)),
 					},
 				},
 			},
 		},
 	}
 
-	Expect(k8sClient.Create(ctx, pipelineRun)).To(Succeed())
-
-	// Update status to mark as successful
+	// Set the success condition manually using SetCondition
 	pipelineRun.Status.SetCondition(&apis.Condition{
 		Type:   apis.ConditionSucceeded,
-		Status: "True",
+		Status: corev1.ConditionTrue,
 	})
+
+	Expect(k8sClient.Create(ctx, pipelineRun)).To(Succeed())
+
+	// Update status separately as it may be a subresource
 	Expect(k8sClient.Status().Update(ctx, pipelineRun)).To(Succeed())
 
 	return pipelineRun
@@ -287,6 +281,10 @@ func CreateIntegrationTestScenario(namespace, name, groupLabel string, optional 
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
+			Labels: map[string]string{
+				integrationv1alpha1.TestSubjectGroupLabel: groupLabel,
+				"test.appstudio.openshift.io/optional":    fmt.Sprintf("%t", optional),
+			},
 		},
 		Spec: integrationv1alpha1.IntegrationTestScenarioSpec{
 			Selector: integrationv1alpha1.IntegrationTestScenarioSelector{
@@ -295,15 +293,23 @@ func CreateIntegrationTestScenario(namespace, name, groupLabel string, optional 
 				},
 			},
 			ResolverRef: integrationv1alpha1.ResolverRef{
-				Resolver: "git",
+				Resolver: "bundles",
 				Params: []integrationv1alpha1.ResolverParameter{
-					{Name: "url", Value: "https://github.com/myorg/test-definitions"},
-					{Name: "revision", Value: "main"},
-					{Name: "pathInRepo", Value: fmt.Sprintf("%s/pipeline.yaml", name)},
+					{
+						Name:  "bundle",
+						Value: "quay.io/konflux-ci/tekton-catalog/pipeline-integration-test:latest",
+					},
+					{
+						Name:  "name",
+						Value: "integration-test",
+					},
 				},
 			},
 			Params: []integrationv1alpha1.PipelineParameter{
-				{Name: "IMAGE_URL", Value: "$(params.TEST_SUBJECT_IMAGES)"},
+				{
+					Name:  "IMAGE_URL",
+					Value: "$(test_subject.components.component-name.containerImage)",
+				},
 			},
 			Optional: optional,
 		},
@@ -322,11 +328,6 @@ func CreateTestSubjectConstructor(namespace, name, groupLabel string) *integrati
 		},
 		Spec: integrationv1alpha1.TestSubjectConstructorSpec{
 			Selector: integrationv1alpha1.TestSubjectSelector{
-				Fields: integrationv1alpha1.TestSubjectFieldSelector{
-					Match: map[string]string{
-						"kind": "PipelineRun",
-					},
-				},
 				Labels: integrationv1alpha1.TestSubjectLabelSelector{
 					Match: map[string]string{
 						"pipelines.appstudio.openshift.io/type": "build",
@@ -335,13 +336,7 @@ func CreateTestSubjectConstructor(namespace, name, groupLabel string) *integrati
 			},
 			Extractor: integrationv1alpha1.TestSubjectExtractor{
 				Name:     ".metadata.labels[\"appstudio.openshift.io/component\"]",
-				ImageURL: ".status.results[] | select(.name == \"IMAGE_URL\") | .value.stringVal",
-				Source: integrationv1alpha1.TestSubjectSourceExtractor{
-					Git: integrationv1alpha1.TestSubjectGitSourceExtractor{
-						URL:      ".status.results[] | select(.name == \"CHAINS-GIT_URL\") | .value.stringVal",
-						Revision: ".status.results[] | select(.name == \"CHAINS-GIT_COMMIT\") | .value.stringVal",
-					},
-				},
+				ImageURL: ".status.results[] | select(.name == \"IMAGE_URL\") | .value",
 			},
 			Template: integrationv1alpha1.TestSubjectTemplate{
 				Labels: map[string]string{

@@ -74,6 +74,43 @@ rules:
   - list
   - watch
 - apiGroups:
+  - integration.konflux-ci.dev
+  resources:
+  - integrationtestscenarios
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - integration.konflux-ci.dev
+  resources:
+  - testsubjectconstructors
+  - testsubjects
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - integration.konflux-ci.dev
+  resources:
+  - testsubjectconstructors/finalizers
+  - testsubjects/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - integration.konflux-ci.dev
+  resources:
+  - testsubjectconstructors/status
+  - testsubjects/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - pipelinesascode.tekton.dev
   resources:
   - repositories

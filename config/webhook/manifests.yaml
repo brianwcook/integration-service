@@ -37,27 +37,6 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-appstudio-redhat-com-v1beta2-integrationtestscenario
-  failurePolicy: Fail
-  name: vintegrationtestscenario.kb.io
-  rules:
-  - apiGroups:
-    - appstudio.redhat.com
-    apiVersions:
-    - v1beta2
-    operations:
-    - CREATE
-    - UPDATE
-    - DELETE
-    resources:
-    - integrationtestscenarios
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
       path: /validate-integration-konflux-ci-dev-v1alpha1-testsubject
   failurePolicy: Fail
   name: vtestsubject.kb.io
@@ -72,4 +51,25 @@ webhooks:
     - DELETE
     resources:
     - testsubjects
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-appstudio-redhat-com-v1beta2-integrationtestscenario
+  failurePolicy: Fail
+  name: vintegrationtestscenario.kb.io
+  rules:
+  - apiGroups:
+    - appstudio.redhat.com
+    apiVersions:
+    - v1beta2
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - integrationtestscenarios
   sideEffects: None
