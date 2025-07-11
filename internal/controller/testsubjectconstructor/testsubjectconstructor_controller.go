@@ -107,14 +107,20 @@ func (r *Reconciler) ReconcileTriggeredResource(ctx context.Context, req ctrl.Re
 	}
 
 	// Process each matching constructor
+	var processingErrors []error
 	for _, constructor := range constructors.Items {
 		if r.resourceMatchesConstructor(pipelineRun, &constructor) {
 			adapter := NewAdapter(ctx, &constructor, logger, r.Client)
 			if err := adapter.ProcessTriggeringResource(pipelineRun); err != nil {
 				logger.Error(err, "Failed to process triggering resource", "constructor", constructor.Name)
-				// Continue with other constructors
+				processingErrors = append(processingErrors, err)
 			}
 		}
+	}
+
+	// If all processing attempts failed, return an error
+	if len(processingErrors) > 0 {
+		return ctrl.Result{}, processingErrors[0]
 	}
 
 	return ctrl.Result{}, nil

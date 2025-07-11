@@ -51,11 +51,15 @@ endif
 
 # Image URL to use all building/pushing image targets
 IMG ?= $(IMAGE_TAG_BASE):$(TAG_NAME)
+
+# Test image URL
+TEST_IMG ?= $(IMAGE_TAG_BASE)-test:$(TAG_NAME)
+
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.23
 
-# container engine to use.  Defaults to docker
-CONT_ENGINE ?= docker
+# container engine to use. Auto-detect if not specified
+CONT_ENGINE ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null || echo "docker")
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -115,9 +119,46 @@ download-crds: ## Vendoring doesn't fetch CRDs yaml files due pruning of depende
 	go mod download github.com/konflux-ci/release-service
 	go mod download github.com/tektoncd/pipeline
 
-.PHONY: test
-test: manifests generate fmt vet envtest download-crds ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test ./... -coverprofile cover.out
+##@ Testing
+
+# Local tool installation (preferred for development)
+.PHONY: install-test-tools
+install-test-tools: ## Install testing tools locally
+	@echo "Installing testing tools..."
+	@go install github.com/onsi/ginkgo/v2/ginkgo@latest
+	@go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.1
+	@echo "✅ Testing tools installed"
+
+.PHONY: test-unit
+test-unit: install-test-tools ## Run unit tests locally (fastest)
+	$(shell go env GOPATH)/bin/ginkgo run -v internal/controller/testsubject/ internal/controller/testsubjectconstructor/ internal/webhook/v1alpha1/
+
+.PHONY: test-unit-containerized
+test-unit-containerized: test-container-build ## Run unit tests in container (consistent environment)
+	$(CONT_ENGINE) run --rm -it quay.io/konflux-ci/integration-service-test:next
+
+.PHONY: test-integration
+test-integration: install-test-tools ## Run integration tests using Kind
+	$(MAKE) -C test/integration test
+
+.PHONY: test-all
+test-all: test-unit test-integration ## Run all tests locally
+
+.PHONY: test-all-containerized
+test-all-containerized: test-unit-containerized ## Run all tests in container
+
+# Container-based testing (for CI/CD consistency)
+.PHONY: test-container-build
+test-container-build: ## Build test container
+	$(CONT_ENGINE) build -f Dockerfile.test -t quay.io/konflux-ci/integration-service-test:next .
+
+.PHONY: test-container-clean
+test-container-clean: ## Clean test container
+	$(CONT_ENGINE) rmi quay.io/konflux-ci/integration-service-test:next || true
+
+.PHONY: test-container-debug
+test-container-debug: test-container-build ## Debug container environment
+	$(CONT_ENGINE) run --rm -it quay.io/konflux-ci/integration-service-test:next /bin/bash -c "echo 'PATH: $$PATH' && ls -la /opt/app-root/src/go/bin/ && which ginkgo || echo 'ginkgo not found in PATH'"
 
 ##@ Build
 

@@ -52,3 +52,24 @@ webhooks:
     resources:
     - integrationtestscenarios
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-integration-konflux-ci-dev-v1alpha1-testsubject
+  failurePolicy: Fail
+  name: vtestsubject.kb.io
+  rules:
+  - apiGroups:
+    - integration.konflux-ci.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - testsubjects
+  sideEffects: None

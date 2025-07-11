@@ -19,6 +19,7 @@ package testsubject
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	integrationv1alpha1 "github.com/konflux-ci/integration-service/api/integration/v1alpha1"
 	"github.com/konflux-ci/integration-service/helpers"
@@ -205,30 +206,28 @@ func (a *Adapter) testSubjectMatchesScenario(scenario *integrationv1alpha1.Integ
 // createPipelineRunForScenario creates a PipelineRun for a given IntegrationTestScenario
 func (a *Adapter) createPipelineRunForScenario(scenario *integrationv1alpha1.IntegrationTestScenario) (*tektonv1.PipelineRun, error) {
 	// Check if PipelineRun already exists
-	pipelineRunName := fmt.Sprintf("%s-%s", a.testSubject.Name, scenario.Name)
+	pipelineRunName := strings.ToLower(a.testSubject.Name + "-" + scenario.Name)
 	existingPipelineRun := &tektonv1.PipelineRun{}
 	err := a.client.Get(a.context, types.NamespacedName{
 		Name:      pipelineRunName,
 		Namespace: a.testSubject.Namespace,
 	}, existingPipelineRun)
-
 	if err == nil {
 		// PipelineRun already exists
 		return nil, nil
 	}
-
 	if !errors.IsNotFound(err) {
 		return nil, err
 	}
 
-	// Create new PipelineRun
+	// Create PipelineRun for this scenario
 	pipelineRun := &tektonv1.PipelineRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pipelineRunName,
 			Namespace: a.testSubject.Namespace,
 			Labels: map[string]string{
-				helpers.PipelineRunScenarioLabel:    scenario.Name,
 				helpers.PipelineRunTestSubjectLabel: a.testSubject.Name,
+				helpers.PipelineRunScenarioLabel:    scenario.Name,
 			},
 		},
 		Spec: tektonv1.PipelineRunSpec{

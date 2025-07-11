@@ -244,3 +244,104 @@ This is a **breaking change**. The old APIs (`appstudio.redhat.com`) are still s
 4. **When all required tests pass, TestSubject becomes the new control**
 
 This creates a fully automated integration testing pipeline without dependencies on proprietary APIs. 
+
+## TestSubject Validation Webhook
+
+To ensure data integrity and prevent accidental modifications to critical fields, the `TestSubject` resource is protected by a validating admission webhook.
+
+### Components Immutability
+
+The webhook enforces that the `components` field in a `TestSubject` is immutable after creation. This means:
+
+- ✅ **Allowed**: Creating a `TestSubject` with any components
+- ❌ **Rejected**: Adding new components to existing `TestSubject`
+- ❌ **Rejected**: Modifying existing components (image, name, source, etc.)
+- ❌ **Rejected**: Removing components from existing `TestSubject`
+- ❌ **Rejected**: Reordering components in existing `TestSubject`
+- ✅ **Allowed**: Updating labels, annotations, and other metadata
+
+### Why Components Are Immutable
+
+1. **Data Integrity**: Prevents accidental corruption of test data
+2. **Audit Trail**: Maintains clear history of what was tested
+3. **Consistency**: Ensures test results are always tied to specific component versions
+4. **Security**: Prevents unauthorized modification of test subjects
+
+### Webhook Configuration
+
+The webhook is configured as a ValidatingAdmissionWebhook with:
+- **Failure Policy**: `Fail` (strict validation)
+- **Operations**: `CREATE`, `UPDATE`, `DELETE`
+- **API Groups**: `integration.konflux-ci.dev`
+- **Versions**: `v1alpha1`
+- **Resources**: `testsubjects`
+
+### Testing the Webhook
+
+The webhook includes comprehensive test coverage:
+
+#### Unit Tests (`internal/webhook/v1alpha1/testsubject_webhook_test.go`)
+- Direct validation method testing
+- Error handling scenarios
+- Edge cases (empty components, etc.)
+
+#### Integration Tests (`test/integration/testsubject_webhook_test.go`)
+- Real Kubernetes API server testing
+- Complete webhook registration and operation
+- End-to-end validation scenarios
+
+### Example: Components Immutability
+
+```yaml
+# This TestSubject creation will succeed
+apiVersion: integration.konflux-ci.dev/v1alpha1
+kind: TestSubject
+metadata:
+  name: my-test-subject
+  labels:
+    integration.konflux-ci.dev/test-subject-group: my-app
+spec:
+  components:
+  - name: frontend
+    containerImage: quay.io/myorg/frontend:v1.0.0
+    source:
+      git:
+        url: https://github.com/myorg/frontend
+        revision: main
+```
+
+```bash
+# This update will be REJECTED by the webhook
+kubectl patch testsubject my-test-subject --type='json' -p='[
+  {
+    "op": "replace",
+    "path": "/spec/components/0/containerImage",
+    "value": "quay.io/myorg/frontend:v2.0.0"
+  }
+]'
+# Error: admission webhook "vtestsubject.kb.io" denied the request: 
+# components field is immutable and cannot be modified after creation
+```
+
+```bash
+# This update will be ALLOWED by the webhook
+kubectl patch testsubject my-test-subject --type='json' -p='[
+  {
+    "op": "add",
+    "path": "/metadata/labels/updated",
+    "value": "true"
+  }
+]'
+# Success: TestSubject/my-test-subject patched
+```
+
+### Webhook Deployment
+
+The webhook is automatically deployed with the integration-service:
+
+1. **Certificate Management**: Uses cert-manager or manual certificate provisioning
+2. **Service Configuration**: Webhook server runs as part of the main controller
+3. **High Availability**: Supports multiple controller replicas
+4. **Monitoring**: Webhook metrics and logging included
+
+--- 

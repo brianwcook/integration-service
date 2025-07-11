@@ -23,6 +23,7 @@ import (
 	"time"
 
 	controllers "github.com/konflux-ci/integration-service/internal/controller"
+	testsubjectwebhook "github.com/konflux-ci/integration-service/internal/webhook/v1alpha1"
 	iswebhook "github.com/konflux-ci/integration-service/internal/webhook/v1beta2"
 	imetrics "github.com/konflux-ci/integration-service/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -178,6 +179,10 @@ func main() {
 	}
 	if err = iswebhook.SetupIntegrationTestScenarioWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "IntegrationTestScenario")
+		os.Exit(1)
+	}
+	if err = testsubjectwebhook.SetupTestSubjectWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "TestSubject")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder
