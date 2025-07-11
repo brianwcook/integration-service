@@ -1,0 +1,40 @@
+# Kind cluster configuration for integration tests
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: integration-test
+
+# Configure the cluster with multiple nodes for testing
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
+- role: worker
+- role: worker
+
+# Configure containerd to use the local registry
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
+    endpoint = ["http://kind-registry:5000"]
+
+# Configure networking
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
+  disableDefaultCNI: false
+
+# Configure feature gates for testing
+featureGates:
+  # Enable any required feature gates
+  EphemeralContainers: true 
