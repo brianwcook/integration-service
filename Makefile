@@ -56,7 +56,7 @@ IMG ?= $(IMAGE_TAG_BASE):$(TAG_NAME)
 TEST_IMG ?= $(IMAGE_TAG_BASE)-test:$(TAG_NAME)
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.23
+ENVTEST_K8S_VERSION = 1.25
 
 # container engine to use. Auto-detect if not specified
 CONT_ENGINE ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null || echo "docker")
@@ -142,10 +142,18 @@ test-integration: install-test-tools ## Run integration tests using Kind
 	$(MAKE) -C test/integration test
 
 .PHONY: test-all
-test-all: test-unit test-integration ## Run all tests locally
+test-all: test-unit test-controllers test-integration ## Run all tests locally
 
 .PHONY: test-all-containerized
 test-all-containerized: test-unit-containerized ## Run all tests in container
+
+.PHONY: test-controllers
+test-controllers: envtest ## Run all controller tests with proper envtest setup
+	@echo "Setting up envtest assets..."
+	@KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --print path)" && \
+	echo "Using KUBEBUILDER_ASSETS=$$KUBEBUILDER_ASSETS" && \
+	export KUBEBUILDER_ASSETS && \
+	go test -v ./internal/controller/...
 
 # Container-based testing (for CI/CD consistency)
 .PHONY: test-container-build
